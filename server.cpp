@@ -13,35 +13,24 @@
 using namespace std;
 
 #define SERVER_PORT_NO 30000
-#define CLIENT_LIMIT 10
-long selfSock;
+#define CLIENT_LIMIT 10 // 10 clients can connect to the server at a time
+long selfSock; // server's listening socket
+struct sockaddr_in server_addr; // struct to store server's own address and port
 
-map<short, string> clientAddr;
-map<short, long> clientSock;
-map<short, pthread_t> clientThread;
+struct Client{
+    string IP;
+    int port;
+    long socket;
+    pthread_t thread;
+};
 short clientCount = 0;
+map<short, Client> clients;
 
-bool initIssueHandled = false;
-
-// prints addresses and port numbers of all the connected clients
-void printAddrs()
-{
-    cout << "Connected clients: " << endl;
-    for (auto i = clientAddr.begin(); i != clientAddr.end(); i++)
-    {
-        cout << i->first << ' ' <<  i->second << endl;
-    }
-}
 
 // first client to connect to a server will have address 0.0.0.0:0
 // handleInitIssue will connect a dummy client which will later disconnect
 void* handleInitIssue(void*)
 {
-    struct sockaddr_in server_addr;
-    server_addr.sin_family = AF_INET;
-	server_addr.sin_port = htons(SERVER_PORT_NO);
-	inet_aton("127.0.0.1", &server_addr.sin_addr);
-
 	long a = socket(AF_INET, SOCK_STREAM, 0);
 	if (a == -1) {
 		perror("[-]Socket Creation failed\n");
@@ -57,10 +46,9 @@ void* handleInitIssue(void*)
 // initializes the server
 void createServer()
 {
-    struct sockaddr_in s_addr;
-	s_addr.sin_family = AF_INET;
-	s_addr.sin_port	= htons(SERVER_PORT_NO);
-	inet_aton("127.0.0.1", &s_addr.sin_addr);
+	server_addr.sin_family = AF_INET;
+	server_addr.sin_port	= htons(SERVER_PORT_NO);
+	inet_aton("127.0.0.1", &server_addr.sin_addr);
 
 	selfSock = socket(AF_INET, SOCK_STREAM, 0);
 	if (selfSock == -1) {
@@ -68,7 +56,7 @@ void createServer()
 		exit(-1);
 	}
 
-	if (bind(selfSock, (struct sockaddr*) &s_addr, sizeof(s_addr)) == -1) {
+	if (bind(selfSock, (struct sockaddr*) &server_addr, sizeof(server_addr)) == -1) {
 		perror("[-]Bind failed on socket.\n");
 		exit(-1);	
 	}
@@ -86,32 +74,28 @@ void createServer()
 void* handleClient(void * id)
 {
     short clientID = (long)id;
-    char buffer[100];
     string msg;
+    char buffer[100];
 
     // tell the new client its own address (code: 0)
-    bzero(buffer, 100);
-    msg = "0\n" + to_string(clientID) + "\n" + clientAddr[clientID];
-    strcpy(buffer, msg.c_str());
-    send(clientSock[clientID], &buffer, strlen(buffer), 0);
+    msg = "0\n" + to_string(clientID) + "\n" + clients[clientID].IP + ":" + to_string(clients[clientID].port);
+    send(clients[clientID].socket, msg.c_str(), msg.length(), 0);
     usleep(1000);
     
     // send new client address to all available clients (code: 1)
-    for (auto i = clientSock.begin(); i != clientSock.end(); i++)
+    for (auto i = clients.begin(); i != clients.end(); i++)
     {
         if (i->first == clientID) continue;
 
-        bzero(buffer, 100);
-        msg = "1\n" + to_string(clientID) + "\n" + clientAddr[clientID];
-        strcpy(buffer, msg.c_str());
-        send(i->second, &buffer, strlen(buffer), 0);
+        msg = "1\n" + to_string(clientID) + "\n" + clients[clientID].IP + ":" + to_string(clients[clientID].port);
+        send(i->second.socket, msg.c_str(), msg.length(), 0);
         usleep(1000);
     }
 
     while (1)
     {
         bzero(buffer, 100);
-        recv(clientSock[clientID], buffer, 100, 0);
+        recv(clients[clientID].socket, buffer, 100, 0);
         msg = buffer;
 
         // cout << "Message recieved from " << clientAddr[clientID] << ":" << endl << msg << endl;
@@ -120,10 +104,8 @@ void* handleClient(void * id)
         // Remove all entries for this client.
         if (msg.empty())
         {
-            cout << "[-]Disconnected from " << clientAddr[clientID] << endl;
-            clientAddr.erase(clientID);
-            clientSock.erase(clientID);
-            clientThread.erase(clientID);
+            cout << "[-]Disconnected from " << clients[clientID].IP << ':' << clients[clientID].port << endl;
+            clients.erase(clientID);
             pthread_cancel(pthread_self());
         }
 
@@ -162,12 +144,12 @@ void* acceptClients(void* b)
         cout <<  "[+]Connected to " << clientName << endl;
 
         // save client details in corresponding maps
-        clientSock[clientCount] = connfd;
-        clientAddr[clientCount] = clientName;
-        clientThread[clientCount];
+        clients[clientCount].socket = connfd;
+        clients[clientCount].IP = ip;
+        clients[clientCount].port = cliaddr.sin_port;
 
         // create communication thread for the newly connected client
-        pthread_create(&clientThread[clientCount], NULL, handleClient, (void*)clientCount);
+        pthread_create(&clients[clientCount].thread, NULL, handleClient, (void*)clientCount);
         clientCount++; 
     }
 }
@@ -181,7 +163,6 @@ int main()
 
     pthread_t handleIssue;
     pthread_create(&handleIssue, NULL, handleInitIssue, NULL);
-    initIssueHandled = true;
 
     pthread_join(acceptClientThread, NULL);
     
