@@ -18,20 +18,26 @@ using namespace std;
 
 #define SERVER_PORT_NO 30000
 long serverSock; // socket for communication with server
-struct sockaddr_in server_addr; // server address
+struct sockaddr_in server_addr; // struct for server address
+struct sockaddr_in self_addr; // struct for self address
 long selfSock; // listening socket for this client
 string selfAddr; // IP address and port number of this client
 
-map<short, string> peerAddr; // IP addresses and port numbers of connected peers
-map<short, long> peerSock; // sockets for communication with connected peers
-map<short, pthread_t> peerThread; // thread handles for connected peers
+struct Peer{
+    string IP;
+    int port;
+    long socket;
+    pthread_t thread;
+};
+
+map<short, Peer> peers;
 short peerCount = 0;
 
 string fileDir; // directory of files of this peer
 vector<string> files; // name of files present in this peer's directory
-vector<pair<short, string>> peersWithFile; // addresses of peers that have a certain file
-string downloadingFileName, uploadingFileName; // name of the file being downloaded
-ofstream downloadingFile, uploadingFile; // the file being downloaded
+vector<short> peersWithFile; // addresses of peers that have a certain file
+string downloadingFileName, uploadingFileName;
+ofstream downloadingFile, uploadingFile;
 
 bool chatting = false; // bool to check if the peer is chatting
 bool menuDone = true; // bool to check if the menu function has completed its course
@@ -75,22 +81,37 @@ string portFromAddr(string &addr)
     return port;
 }
 
+// gets and saves the name of files within a directory
+void getFileNames()
+{
+    files.clear();
+    for (const auto & entry : fs::directory_iterator(fileDir))
+    {
+        string filepath = entry.path();
+        string filename = "";
+        for (int i = fileDir.length() + 1; i < filepath.length(); i++)
+        {
+            filename += filepath[i];
+        }
+        files.push_back(filename);
+    }
+}
+
 // search for a file within this peer's address
 bool fileSearch(string filename)
 {
+    getFileNames();
     if (find(files.begin(), files.end(), filename) != files.end())
     {
         return true;
     }
-    
     return false;
 }
 
 // handles file requests from connected peers
 // sends yes to requesting peer if the file exists in directory
-void handleFileReq(string msg, short id)
+void handleFileReq(string msg, short peerID)
 {
-    // string temp[1];
     parseMsg(NULL, msg, 1);
 
     bool found = fileSearch(msg);
@@ -99,7 +120,7 @@ void handleFileReq(string msg, short id)
     
     uploadingFileName = msg;
     char buffer[] = "2\nyes";
-    send(peerSock[id], &buffer, strlen(buffer), 0);
+    send(peers[peerID].socket, &buffer, strlen(buffer), 0);
     usleep(100);
 }
 
@@ -132,13 +153,14 @@ void handleUpload(string filePath, short peerID)
             f.get(ch);
             buf.push_back(ch);
         }
-        send(peerSock[peerID], buf.c_str(), buf.length(), 0);
+        cout << "Sending Packet: " << buf << endl;
+        send(peers[peerID].socket, buf.c_str(), buf.length(), 0);
         size -= packetLen;
         packetNum++;
         usleep(10);
     }
 
-    send(peerSock[peerID], endMsg.c_str(), endMsg.length(), 0);
+    send(peers[peerID].socket, endMsg.c_str(), endMsg.length(), 0);
     usleep(100);
     cout << "[+]File uploaded successfully." << endl;
 }
@@ -157,12 +179,12 @@ void handleDownloadReq(string msg, short peerID)
     {
         reply += "-\n";
         cout << "[-]Error in reading the file." << endl;
-        send(peerSock[peerID], reply.c_str(), strlen(reply.c_str()), 0);
+        send(peers[peerID].socket, reply.c_str(), strlen(reply.c_str()), 0);
         return;
     }
 
     reply += "+\n" + msg;
-    send(peerSock[peerID], reply.c_str(), reply.length(), 0);
+    send(peers[peerID].socket, reply.c_str(), reply.length(), 0);
     usleep(100);
 
     handleUpload(filePath, peerID);
@@ -171,6 +193,7 @@ void handleDownloadReq(string msg, short peerID)
 // handles the download of a file
 void handleDownload(string msg, short peerID)
 {
+    cout << "Packet recieved: " << msg << endl;
     string temp[2];
     parseMsg(temp, msg, 2);
 
@@ -197,7 +220,7 @@ void handleDownload(string msg, short peerID)
 void sendDownloadReq(short peerID, string filename)
 {
     filename = "3\n" + filename;
-    send(peerSock[peerID], filename.c_str(), filename.length(), 0);
+    send(peers[peerID].socket, filename.c_str(), filename.length(), 0);
     usleep(100);
 
     cout << "[+]Download Request sent." << endl;
@@ -210,7 +233,7 @@ void handleIncomingMsg(string msg, short peerID)
     parseMsg(NULL, msg, 1);
     if (msg == "/end")
     {
-        cout << "[+]" << peerAddr[peerID] << " has ended the chat Enter '/end' to end the chat." << endl;
+        cout << "[+]" << peers[peerID].IP << ':' << peers[peerID].port << " has ended the chat Enter '/end' to end the chat." << endl;
         pthread_cancel(chatThread);
         chatting = false;
         menuDone = true;
@@ -221,7 +244,7 @@ void handleIncomingMsg(string msg, short peerID)
     }
     else if (!msg.empty())
     {
-        cout << '\n' << peerAddr[peerID] << ": " << msg << endl;
+        cout << '\n' << peers[peerID].IP << ':' << peers[peerID].port << ": " << msg << endl;
     }
 }
 
@@ -237,7 +260,7 @@ void* handleOutgoingMsg(void* id)
     while (msg != "/end")
     {
         msg = "6\n" + msg;
-        send(peerSock[peerID], msg.c_str(), msg.length(), 0);
+        send(peers[peerID].socket, msg.c_str(), msg.length(), 0);
         usleep(10);
         getline(cin, msg);
         fflush(stdin);
@@ -257,7 +280,7 @@ void handleChatReq(string msg, short peerID)
 
     if (msg == "no")
     {
-        cout << "[+]" << peerAddr[peerID] << " rejected the chat request.\nDo you wish to download the file? [Y/n]: ";
+        cout << "[+]" << peers[peerID].IP << ':' << peers[peerID].port << " rejected the chat request.\nDo you wish to download the file? [Y/n]: ";
         cin >> choice;
         fflush(stdin);
 
@@ -270,13 +293,13 @@ void handleChatReq(string msg, short peerID)
     }
     else if (msg == "yes")
     {
-        cout << "[+]Initializing chat with " << peerAddr[peerID] << endl;
+        cout << "[+]Initializing chat with " << peers[peerID].IP << ':' << peers[peerID].port << endl;
         cout << "Enter '/end' to end the chat.\nEnter '/download' to start download." << endl;
         pthread_create(&chatThread, NULL, handleOutgoingMsg, (void*)peerID);
         return;
     }
 
-    cout << peerAddr[peerID] << " sent a chat request. Accept? [Y/n]: ";
+    cout << peers[peerID].IP << ':' << peers[peerID].port << " sent a chat request. Accept? [Y/n]: ";
     while (!(cin >> choice))
     {
         cin.clear();
@@ -289,10 +312,10 @@ void handleChatReq(string msg, short peerID)
 
     if (choice == "Y" || choice == "y")
     {
-        cout << "[+]Initializing chat with " << peerAddr[peerID] << endl;
+        cout << "[+]Initializing chat with " << peers[peerID].IP << ':' << peers[peerID].port << endl;
         cout << "Enter '/end' to end the chat." << endl;
         reply = "5\nyes";
-        send(peerSock[peerID], reply.c_str(), strlen(reply.c_str()), 0);
+        send(peers[peerID].socket, reply.c_str(), strlen(reply.c_str()), 0);
         usleep(10);
         pthread_create(&chatThread, NULL, handleOutgoingMsg, (void*)peerID);
         chatting = true;
@@ -300,7 +323,7 @@ void handleChatReq(string msg, short peerID)
     else if (choice == "N" || choice == "n")
     {
         reply = "5\nno";
-        send(peerSock[peerID], reply.c_str(), strlen(reply.c_str()), 0);
+        send(peers[peerID].socket, reply.c_str(), strlen(reply.c_str()), 0);
         usleep(10);
         chatting = false;
         menuDone = true;
@@ -316,14 +339,14 @@ void handleChatReq(string msg, short peerID)
 // handles all requests from a peer
 void* handlePeer(void * id)
 {
-    char buffer[100];
+    char *buffer = new char[10000];
     short peerID = (long)id;
     string msg;
 
     while (1)
     {
-        bzero(buffer, 100);
-        recv(peerSock[peerID], buffer, 100, 0);
+        bzero(buffer, 10000);
+        recv(peers[peerID].socket, buffer, 10000, 0);
         msg = buffer;
 
         // cout << "Message received from " << peerAddr[peerID] << ":" << endl << msg << endl;
@@ -332,10 +355,8 @@ void* handlePeer(void * id)
         // Remove all entries for this client.
         if (msg.empty())
         {
-            cout << "[-]Disconnected from " << peerAddr[peerID] << endl;
-            peerAddr.erase(peerID);
-            peerSock.erase(peerID);
-            peerThread.erase(peerID);
+            cout << "[-]Disconnected from " << peers[peerID].IP << ':' << peers[peerID].port << endl;
+            peers.erase(peerID);
             pthread_cancel(pthread_self());
         }
 
@@ -346,7 +367,7 @@ void* handlePeer(void * id)
             break;
         
         case '2':
-            peersWithFile.push_back(pair<short, string>(peerID, peerAddr[peerID]));
+            peersWithFile.push_back(peerID);
             break;
         
         case '3':
@@ -384,33 +405,47 @@ void* acceptPeers(void *)
             perror("[-]Accept failed on socket: ");
         }
 
-        char* ip = new char[15];
+        char ip[15];
         inet_ntop(AF_INET, &(peer_addr.sin_addr), ip, INET_ADDRSTRLEN);
         string peerName = string(ip) + ":" + to_string(peer_addr.sin_port);
-        delete ip;
 
         if (peerName == "0.0.0.0:0") {continue;}
 
         cout <<  "[+]Connected to " << peerName << endl;
 
-        peerAddr[peerCount] = peerName;
-        peerSock[peerCount] = connfd;
-        peerThread[peerCount];
-        pthread_create(&peerThread[peerCount], NULL, handlePeer, (void*)peerCount);
+        peers[peerCount].IP = ip;
+        peers[peerCount].port = peer_addr.sin_port;
+        peers[peerCount].socket = connfd;
+
+        pthread_create(&peers[peerCount].thread, NULL, handlePeer, (void*)peerCount);
         peerCount++;
     }
+}
+
+// first client to connect to a server will have address 0.0.0.0:0
+// handleInitIssue will connect a dummy client which will later disconnect
+void* handleInitIssue(void*)
+{
+	long a = socket(AF_INET, SOCK_STREAM, 0);
+	if (a == -1) {
+		perror("[-]Socket Creation failed.\n");
+		exit(-1);
+	}
+
+	if (connect(a, (struct sockaddr *) &self_addr, sizeof(self_addr))  == -1) {
+		perror("[-]Socket Connect failed\n");
+		exit(-1);
+	}
 }
 
 // initializes the server side of this peer
 void initServer(string msg)
 {
-    // string temp[2];
     parseMsg(NULL, msg, 2);
     selfAddr = msg;
 
     int portNum = stoi(portFromAddr(selfAddr));
 
-    struct sockaddr_in self_addr;
 	self_addr.sin_family = AF_INET;
 	self_addr.sin_port	= htons(portNum);
 	inet_aton("127.0.0.1", &self_addr.sin_addr);
@@ -437,6 +472,11 @@ void initServer(string msg)
 
     pthread_t acceptThread;
     pthread_create(&acceptThread, NULL, acceptPeers, NULL);
+    
+    usleep(100);
+
+    pthread_t issueThread;
+    pthread_create(&issueThread, NULL, handleInitIssue, NULL);
 }
 
 // connect to the peer with given address
@@ -477,11 +517,12 @@ void connectToPeer(string addr)
 		exit(-1);
 	}
 
-    peerSock[peerID] = connfd;
-    peerAddr[peerID] = addr;
+    peers[peerID].IP = ip;
+    peers[peerID].port = portNum;
+    peers[peerID].socket = connfd;
 
     cout << "[+]Connected to " << addr << endl;
-    pthread_create(&peerThread[peerID], NULL, handlePeer, (void*)peerID);
+    pthread_create(&peers[peerID].thread, NULL, handlePeer, (void*)peerID);
 }
 
 // handles the communication with server
@@ -507,6 +548,7 @@ void* handleServer(void *)
         {
         case '0':
             initServer(msg);
+            break;
         case '1':
             connectToPeer(msg);
             break;
@@ -519,9 +561,9 @@ void* handleServer(void *)
 // sends a file request to all the peers
 void sendFileReq(string filename)
 {
-    for (auto it = peerSock.begin(); it != peerSock.end(); it++)
+    for (auto it = peers.begin(); it != peers.end(); it++)
     {
-        send(it->second, filename.c_str(), filename.length(), 0);
+        send(it->second.socket, filename.c_str(), filename.length(), 0);
         usleep(100);
     }
 }
@@ -530,7 +572,7 @@ void sendFileReq(string filename)
 void sendChatReq(short peerID)
 {
     string msg = "5\nchat?";
-    send(peerSock[peerID], msg.c_str(), msg.length(), 0);
+    send(peers[peerID].socket, msg.c_str(), msg.length(), 0);
     usleep(10);
     chatting = true;
 }
@@ -581,7 +623,7 @@ void searchMenu()
     int a = 0;
     for (auto it = peersWithFile.begin(); it != peersWithFile.end(); it++)
     {
-        cout << it->first << ' ' << it->second << endl;
+        cout << (*it) << ' ' << peers[(*it)].IP << ':' << peers[(*it)].port << endl;
     }
 
     short id;
@@ -591,7 +633,7 @@ void searchMenu()
 
     if (id == -1) {return;}
 
-    if (peerSock.find(id) == peerSock.end())
+    if (peers.find(id) == peers.end())
     {
         cout << "Invalid peer ID." << endl;
         return;
@@ -674,21 +716,6 @@ void connectToServer()
     cout << "[+]Connected to server." << endl;
 }
 
-// gets and saves the name of files within a directory
-void getFileNames(string dir)
-{
-    for (const auto & entry : fs::directory_iterator(fileDir))
-    {
-        string filepath = entry.path();
-        string filename = "";
-        for (int i = fileDir.length() + 1; i < filepath.length(); i++)
-        {
-            filename += filepath[i];
-        }
-        files.push_back(filename);
-    }
-}
-
 int main(int argc, char* argv[])
 {
     if (argc < 2)
@@ -699,7 +726,7 @@ int main(int argc, char* argv[])
     fileDir = argv[1];
 
 
-    getFileNames(fileDir);
+    getFileNames();
     connectToServer();
     pthread_create(&serverThread, NULL, handleServer, NULL);
     
