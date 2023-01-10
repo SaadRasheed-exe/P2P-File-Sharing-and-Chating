@@ -103,8 +103,10 @@ bool fileSearch(string filename)
     getFileNames();
     if (find(files.begin(), files.end(), filename) != files.end())
     {
+        uploadingFileName = filename;
         return true;
     }
+    uploadingFileName = "";
     return false;
 }
 
@@ -118,7 +120,6 @@ void handleFileReq(string msg, short peerID)
     
     if (!found) {return;}
     
-    uploadingFileName = msg;
     char buffer[] = "2\nyes";
     send(peers[peerID].socket, &buffer, strlen(buffer), 0);
     usleep(100);
@@ -163,6 +164,7 @@ void handleUpload(string filePath, short peerID)
     send(peers[peerID].socket, endMsg.c_str(), endMsg.length(), 0);
     usleep(100);
     cout << "[+]File uploaded successfully." << endl;
+    uploadingFileName = "";
 }
 
 // handles the download requests from a given peer
@@ -180,6 +182,7 @@ void handleDownloadReq(string msg, short peerID)
         reply += "-\n";
         cout << "[-]Error in reading the file." << endl;
         send(peers[peerID].socket, reply.c_str(), strlen(reply.c_str()), 0);
+        uploadingFileName = "";
         return;
     }
 
@@ -256,6 +259,14 @@ void* handleOutgoingMsg(void* id)
         fflush(stdin);
         getline(cin, msg);
         fflush(stdin);
+        if (msg == "/download")
+        {
+            if (downloadingFileName.empty() && !uploadingFileName.empty())
+            {
+                cout << "[-]Invalid command." << endl;
+                continue;
+            }
+        }
         cout << "You: " << msg << endl;
         msg = "6\n" + msg;
         send(peers[peerID].socket, msg.c_str(), msg.length(), 0);        
