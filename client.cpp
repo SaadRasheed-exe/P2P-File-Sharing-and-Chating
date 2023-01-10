@@ -193,7 +193,6 @@ void handleDownloadReq(string msg, short peerID)
 // handles the download of a file
 void handleDownload(string msg, short peerID)
 {
-    cout << "Packet recieved: " << msg << endl;
     string temp[2];
     parseMsg(temp, msg, 2);
 
@@ -229,11 +228,10 @@ void sendDownloadReq(short peerID, string filename)
 // handles all incoming messages from a peer
 void handleIncomingMsg(string msg, short peerID)
 {
-    // string temp[1];
     parseMsg(NULL, msg, 1);
     if (msg == "/end")
     {
-        cout << "[+]" << peers[peerID].IP << ':' << peers[peerID].port << " has ended the chat Enter '/end' to end the chat." << endl;
+        cout << "[+]" << peers[peerID].IP << ':' << peers[peerID].port << " has ended the chat." << endl;
         pthread_cancel(chatThread);
         chatting = false;
         menuDone = true;
@@ -251,20 +249,16 @@ void handleIncomingMsg(string msg, short peerID)
 // handles all outgoing messages from a peer
 void* handleOutgoingMsg(void* id)
 {
-    // cout << downloadingFileName << endl;
     string msg;
     short peerID = (long)id;
-    getline(cin, msg);
-    fflush(stdin);
-    cout << "\nYou: " << msg << endl;
-    while (msg != "/end")
+    while (msg != "6\n/end")
     {
-        msg = "6\n" + msg;
-        send(peers[peerID].socket, msg.c_str(), msg.length(), 0);
-        usleep(10);
+        fflush(stdin);
         getline(cin, msg);
         fflush(stdin);
         cout << "You: " << msg << endl;
+        msg = "6\n" + msg;
+        send(peers[peerID].socket, msg.c_str(), msg.length(), 0);        
         usleep(100);
     }
     chatting = false;
@@ -445,7 +439,7 @@ void initServer(string msg)
     selfAddr = msg;
 
     int portNum = stoi(portFromAddr(selfAddr));
-
+    
 	self_addr.sin_family = AF_INET;
 	self_addr.sin_port	= htons(portNum);
 	inet_aton("127.0.0.1", &self_addr.sin_addr);
